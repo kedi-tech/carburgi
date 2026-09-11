@@ -169,6 +169,43 @@ export const fetchAdminMe = cache(async (): Promise<Account> => {
   return response.data;
 });
 
+export type NewAdmin = {
+  fullName: string;
+  /** E.164 — the number the new administrator will sign in with. */
+  phoneNumber: string;
+  password: string;
+};
+
+/**
+ * Creates an administrator. `POST /admin/accounts` is **not in the spec** —
+ * the live server answers it with a 401 where an unknown path gets a 404, so
+ * the route exists; its body is inferred from what an admin account is (the
+ * login takes a phone number and a password). A validation refusal is shown
+ * in the server's own words, and a deployment without the route says so
+ * instead of "introuvable".
+ */
+export async function createAdminAccount(admin: NewAdmin): Promise<Account | null> {
+  let response: Envelope<Account | undefined> | null;
+  try {
+    response = await request("/admin/accounts", {
+      method: "POST",
+      body: { role: "ADMIN", ...admin },
+    });
+  } catch (caught) {
+    if (caught instanceof ApiError && caught.status === 404) {
+      throw new ApiError(
+        404,
+        "Ce serveur ne propose pas la création de compte administrateur (POST /admin/accounts). L’accès doit être provisionné en base.",
+      );
+    }
+    if (caught instanceof ApiError && caught.status === 409) {
+      throw new ApiError(409, "Un compte utilise déjà ce numéro de téléphone.");
+    }
+    throw caught;
+  }
+  return response?.data ?? null;
+}
+
 /* ------------------------------------------------------------- Stations */
 
 export const fetchStations = cache(async (): Promise<Station[]> => {

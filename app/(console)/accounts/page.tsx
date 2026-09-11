@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import ActionButton from "@/components/action-button";
+import CreateAdmin from "@/components/create-admin";
 import { updateAccountStatus } from "@/app/actions/admin";
 import Icon from "@/components/icon";
 import Pagination from "@/components/pagination";
@@ -258,7 +259,10 @@ export default async function AccountsPage(props: PageProps<"/accounts">) {
         title="Répertoire des comptes"
         description="Accès des équipes station, modération des conducteurs et traçabilité des comptes administrateurs."
         actions={
-<RefreshButton label="Actualiser" />
+          <>
+            <CreateAdmin />
+            <RefreshButton label="Actualiser" />
+          </>
         }
       />
 
@@ -268,9 +272,9 @@ export default async function AccountsPage(props: PageProps<"/accounts">) {
         ) : null}
 
         <NoteBanner icon="shield" title="Provisionnement des administrateurs">
-          Aucun compte administrateur ne peut être créé depuis cette interface : un nouvel accès au
-          back-office se provisionne directement en base. Sur les autres comptes, le changement de
-          statut est la seule modification possible.
+          Un accès au back-office se crée depuis « Nouvel administrateur » : nom, numéro de
+          téléphone et mot de passe, transmis en main propre. Sur les autres comptes, le changement
+          de statut est la seule modification possible.
         </NoteBanner>
 
         <section className="grid gap-3 md:grid-cols-4">

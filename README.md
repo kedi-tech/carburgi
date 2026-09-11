@@ -25,8 +25,14 @@ CARBUGUI_API_URL=https://carbugui.kedi-tech.com/api/v1   # already the default
 
 Signing in needs an account whose role is `ADMIN`. `POST /admin/auth/login` refuses anything else
 with a 403, which the login screen reports the same way as a wrong password — telling them apart
-only helps someone guessing. The API exposes no route that creates an administrator, so the first
-one is provisioned directly in the database.
+only helps someone guessing. The **first** administrator is provisioned directly in the database;
+every next one is created from Comptes → *Nouvel administrateur* (name, phone number, password).
+That button posts to `POST /admin/accounts`, a route the live server has but the spec does not
+list — an unknown path under `/admin` answers 404 where this one answers 401 — so the body
+(`{ role: "ADMIN", fullName, phoneNumber, password }`) is inferred from what the login needs. If
+the server wants something else, its validation message is shown verbatim under the form; a server
+without the route gets a sentence saying so. The password is never returned by the API and never
+stored by the console: the person creating the access types it and hands it over.
 
 Reads are isolated per panel (`lib/safe.ts`): a catalogue that fails to load leaves the approval
 queue beside it working, and each panel renders the reason it has no data rather than blanking the

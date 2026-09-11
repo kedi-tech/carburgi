@@ -90,6 +90,25 @@ export function placeLabel(parts: (string | null | undefined)[]): string {
   return kept.length > 0 ? kept.join(" · ") : "—";
 }
 
+/**
+ * What an administrator types as a Guinean number, as the API stores it:
+ * E.164, `+224` and nine digits. Accepts the local form ("622 33 44 55"),
+ * the prefixed forms ("224…", "00224…", "+224…") and any spacing; anything
+ * else is null rather than a guess.
+ */
+export function normalizeGuineaPhone(input: string): string | null {
+  let digits = input.replace(/[^\d+]/g, "");
+  if (digits.startsWith("+")) {
+    digits = digits.slice(1);
+  } else if (digits.startsWith("00")) {
+    digits = digits.slice(2);
+  }
+  if (digits.startsWith("224")) {
+    digits = digits.slice(3);
+  }
+  return /^\d{9}$/.test(digits) ? `+224${digits}` : null;
+}
+
 /** "+224622334455" -> "+224 622 33 44 55". */
 export function phoneLabel(phoneNumber: string | null): string {
   if (!phoneNumber) {
