@@ -230,7 +230,13 @@ export default async function AccountsPage(props: PageProps<"/accounts">) {
   const needle = search.trim().toLowerCase();
   const matched = all
     .filter((account) => (role === "ALL" ? true : account.role === role))
-    .filter((account) => (status === "ALL" ? true : account.status === status))
+    // The API has no DELETE: « Supprimer » sets the status to DELETED and the
+    // account stays on record. The default view hides those rows, so a deleted
+    // account leaves the table the moment the action lands; the « Supprimés »
+    // filter is where they are still consultable.
+    .filter((account) =>
+      status === "ALL" ? account.status !== "DELETED" : account.status === status,
+    )
     .filter((account) => matches(account, needle))
     .sort((a, b) => (b.lastSeenAt ?? b.createdAt).localeCompare(a.lastSeenAt ?? a.createdAt));
   const listing = paginate(matched, requestedPage, ACCOUNTS_PER_PAGE);
@@ -272,9 +278,9 @@ export default async function AccountsPage(props: PageProps<"/accounts">) {
         ) : null}
 
         <NoteBanner icon="shield" title="Provisionnement des administrateurs">
-          Un accès au back-office se crée depuis « Nouvel administrateur » : nom, numéro de
-          téléphone et mot de passe, transmis en main propre. Sur les autres comptes, le changement
-          de statut est la seule modification possible.
+          Un accès au back-office se crée depuis « Nouvel administrateur » : nom et numéro de
+          téléphone, le mot de passe étant généré par le serveur et affiché une seule fois. Sur les
+          autres comptes, le changement de statut est la seule modification possible.
         </NoteBanner>
 
         <section className="grid gap-3 md:grid-cols-4">
@@ -370,7 +376,7 @@ export default async function AccountsPage(props: PageProps<"/accounts">) {
             >
               {STATUSES.map((entry) => (
                 <option key={entry} value={entry}>
-                  {entry === "ALL" ? "Tous les statuts" : accountStatusLabels[entry]}
+                  {entry === "ALL" ? "Tous (hors supprimés)" : accountStatusLabels[entry]}
                 </option>
               ))}
             </select>

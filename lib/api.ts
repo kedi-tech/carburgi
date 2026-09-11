@@ -7,6 +7,7 @@ import { readAccessToken } from "./session";
 import type {
   Account,
   AccountRole,
+  AdminAccess,
   AccountStatus,
   AdminMessage,
   Area,
@@ -169,33 +170,25 @@ export const fetchAdminMe = cache(async (): Promise<Account> => {
   return response.data;
 });
 
-export type NewAdmin = {
-  fullName: string;
-  /** E.164 — the number the new administrator will sign in with. */
-  phoneNumber: string;
-  password: string;
-};
-
 /**
- * Creates an administrator. `POST /admin/accounts` is **not in the spec** —
- * the live server answers it with a 401 where an unknown path gets a 404, so
- * the route exists; its body is inferred from what an admin account is (the
- * login takes a phone number and a password). A validation refusal is shown
- * in the server's own words, and a deployment without the route says so
- * instead of "introuvable".
+ * Creates another administrator — same rights as the caller, there is no
+ * "super admin". The server generates the password and returns it **once**
+ * in `data.password`, exactly like a station's access; the caller shows it
+ * and hands it over. A deployment that lags the spec answers 404, which is
+ * reported as such rather than as "introuvable".
  */
-export async function createAdminAccount(admin: NewAdmin): Promise<Account | null> {
-  let response: Envelope<Account | undefined> | null;
+export async function createAdminAccount(fullName: string, phoneNumber: string): Promise<AdminAccess> {
+  let response: Envelope<AdminAccess>;
   try {
-    response = await request("/admin/accounts", {
+    response = await request("/admin/accounts/admins", {
       method: "POST",
-      body: { role: "ADMIN", ...admin },
+      body: { fullName, phoneNumber },
     });
   } catch (caught) {
     if (caught instanceof ApiError && caught.status === 404) {
       throw new ApiError(
         404,
-        "Ce serveur ne propose pas la création de compte administrateur (POST /admin/accounts). L’accès doit être provisionné en base.",
+        "Ce serveur ne propose pas encore la création d’administrateur.",
       );
     }
     if (caught instanceof ApiError && caught.status === 409) {
@@ -203,7 +196,7 @@ export async function createAdminAccount(admin: NewAdmin): Promise<Account | nul
     }
     throw caught;
   }
-  return response?.data ?? null;
+  return response.data;
 }
 
 /* ------------------------------------------------------------- Stations */

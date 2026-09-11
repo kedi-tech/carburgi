@@ -35,8 +35,8 @@ import { dateLabel, normalizeGuineaPhone, phoneLabel } from "@/lib/format";
 import { audienceRecipients, isTarget, reachablePeople } from "@/lib/messages";
 import { safe } from "@/lib/safe";
 import type {
-  Account,
   AccountStatus,
+  AdminAccess,
   ChatMessage,
   OsmImportResult,
   ReportStatus,
@@ -58,8 +58,8 @@ export type ActionState = {
   imported?: OsmImportResult;
   /** The reply as the API stored it, for the transcript to confirm in place. */
   message?: ChatMessage;
-  /** The administrator just created, when the API echoed it back. */
-  account?: Account;
+  /** A new administrator's credentials, readable once and never again. */
+  admin?: AdminAccess;
   /** The campaign(s) the API created — one per chunk of 1000 recipients. */
   sent?: SentMessage[];
 };
@@ -306,37 +306,24 @@ export async function removeStation(
  * Mints the station's credentials. The password comes back once — the caller
  * puts it on screen and the API can never show it again.
  */
-/** The shortest password the console accepts for a back-office login. */
-const ADMIN_PASSWORD_MIN_LENGTH = 8;
+/** The spec's `minLength` on `fullName`; checked here so the refusal is instant. */
+const ADMIN_NAME_MIN_LENGTH = 3;
 
 export async function createAdmin(_state: ActionState, formData: FormData): Promise<ActionState> {
   const fullName = required(formData, "fullName");
   const phoneNumber = normalizeGuineaPhone(required(formData, "phoneNumber"));
-  const password = String(formData.get("password") ?? "");
-  const confirmation = String(formData.get("confirmation") ?? "");
 
-  if (fullName.length === 0) {
-    return { error: "Indiquez le nom de l’administrateur." };
+  if (fullName.length < ADMIN_NAME_MIN_LENGTH) {
+    return { error: `Le nom doit compter au moins ${ADMIN_NAME_MIN_LENGTH} caractères.` };
   }
   if (!phoneNumber) {
     return { error: "Numéro invalide : neuf chiffres, avec ou sans +224." };
   }
-  if (password.length < ADMIN_PASSWORD_MIN_LENGTH) {
-    return {
-      error: `Le mot de passe doit compter au moins ${ADMIN_PASSWORD_MIN_LENGTH} caractères.`,
-    };
-  }
-  if (password !== confirmation) {
-    return { error: "Les deux mots de passe ne correspondent pas." };
-  }
 
   try {
-    const account = await createAdminAccount({ fullName, phoneNumber, password });
+    const admin = await createAdminAccount(fullName, phoneNumber);
     revalidateConsole("/accounts");
-    return {
-      done: `Compte administrateur créé pour ${fullName}.`,
-      account: account ?? undefined,
-    };
+    return { admin, done: "Compte administrateur créé." };
   } catch (caught) {
     return failure(caught, "Le compte administrateur n’a pas pu être créé.");
   }

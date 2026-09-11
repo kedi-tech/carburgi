@@ -174,6 +174,17 @@ export type StationAccess = {
   password: string;
 };
 
+/**
+ * What `POST /admin/accounts/admins` answers: the number the new
+ * administrator signs in with and a server-generated password, in clear,
+ * on this response only.
+ */
+export type AdminAccess = {
+  accountId: string;
+  phoneNumber: string;
+  password: string;
+};
+
 /** `POST /admin/stations/import-osm` reports what it did to the catalogue. */
 export type OsmImportResult = {
   created: number;
