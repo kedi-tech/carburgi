@@ -50,6 +50,45 @@ jobs:
       contents: read
       packages: read
     steps:
+      # Writes the key to a file and checks it before connecting, so a missing
+      # or malformed secret fails here with a clear reason instead of
+      # "ssh: no key found" inside the SSH action. The key is never printed.
+      - name: Prepare and check the SSH key
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_IP: ${{ secrets.SERVER_IP }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          KEY_FILE: ${{ runner.temp }}/deploy_key
+        run: |
+          set -eu
+          [ -n "$SERVER_IP" ]   || { echo "::error::SERVER_IP is empty or not shared with this repository."; exit 1; }
+          [ -n "$SERVER_USER" ] || { echo "::error::SERVER_USER is empty or not shared with this repository."; exit 1; }
+          if [ -z "$SERVER_SSH_KEY" ]; then
+            echo "::error::SERVER_SSH_KEY is empty. If it is an organization secret, allow this repository in Organization settings > Secrets > SERVER_SSH_KEY > Repository access."
+            exit 1
+          fi
+
+          # Tolerates a key pasted with Windows line endings or as one line with literal \n.
+          printf '%s\n' "$SERVER_SSH_KEY" | sed 's/\\n/\n/g' | tr -d '\r' > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+
+          if ! grep -q -- '-----BEGIN .*PRIVATE KEY-----' "$KEY_FILE"; then
+            if grep -qE '^(ssh-(rsa|ed25519)|ecdsa-sha2)' "$KEY_FILE"; then
+              echo "::error::SERVER_SSH_KEY holds a PUBLIC key. Paste the PRIVATE key (the file without .pub)."
+            else
+              echo "::error::SERVER_SSH_KEY is not a private key: it must start with -----BEGIN OPENSSH PRIVATE KEY-----."
+            fi
+            exit 1
+          fi
+          if ! ssh-keygen -y -P '' -f "$KEY_FILE" > /dev/null 2>&1; then
+            echo "::error::SERVER_SSH_KEY cannot be read: it is truncated or protected by a passphrase. Use a key without passphrase."
+            exit 1
+          fi
+
+          ssh -i "$KEY_FILE" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
+            "$SERVER_USER@$SERVER_IP" 'echo "SSH OK: $(whoami)@$(hostname)"' \
+            || { echo "::error::The server refused the key. Add its public key to ~/.ssh/authorized_keys of $SERVER_USER on the server."; exit 1; }
+
       - name: Pull and restart the container over SSH
         uses: appleboy/ssh-action@v1.2.0
         env:
@@ -64,7 +103,7 @@ jobs:
         with:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
+          key_path: ${{ runner.temp }}/deploy_key
           envs: IMAGE,CONTAINER,HOST_PORT,REGISTRY_USER,REGISTRY_TOKEN,CARBUGUI_API_URL,GOOGLE_MAPS_API_KEY,STATION_VAULT_KEY
           script_stop: true
           script: |
