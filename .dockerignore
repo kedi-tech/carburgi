@@ -1,0 +1,13 @@
+.git
+.github
+.next
+node_modules
+.data
+.env*
+!.env.local.example
+backend-docs
+*.md
+npm-debug.log*
+tsconfig.tsbuildinfo
+Dockerfile
+.dockerignore

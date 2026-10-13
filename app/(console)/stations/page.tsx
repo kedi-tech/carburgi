@@ -4,7 +4,7 @@ import ActionButton from "@/components/action-button";
 import { markStationVerified, updateStationPublication } from "@/app/actions/admin";
 import DeleteStation from "@/components/delete-station";
 import Icon from "@/components/icon";
-import IssueAccess from "@/components/issue-access";
+import StationTeam, { type TeamMember } from "@/components/station-team";
 import OsmSync from "@/components/osm-sync";
 import Pagination from "@/components/pagination";
 import StationForm from "@/components/station-form";
@@ -20,10 +20,11 @@ import {
   Th,
   Tr,
 } from "@/components/ui";
-import { fetchAccounts, fetchAreas, fetchBrands, fetchStations } from "@/lib/api";
-import { STALE_AFTER_HOURS } from "@/lib/consolidate";
-import { dateLabel, elapsedLabel, grouped, phoneLabel, placeLabel } from "@/lib/format";
-import { accountsForStation } from "@/lib/link";
+import { fetchAccounts, fetchAreas, fetchBrands, fetchStationAgents, fetchStations } from "@/lib/api";
+import { PRODUCTS, STALE_AFTER_HOURS } from "@/lib/consolidate";
+import { dateLabel, elapsedLabel, grouped, placeLabel } from "@/lib/format";
+import { codeMatches } from "@/lib/link";
+import { listCredentials, revealCredential, vaultEnabled } from "@/lib/vault";
 import { paginate, parsePage } from "@/lib/paginate";
 import { safe } from "@/lib/safe";
 import {
@@ -34,7 +35,12 @@ import {
   isStationFilter,
   type StationFilter,
 } from "@/lib/stations";
-import { accountStatusLabels, productLabels, type Product, type Station } from "@/lib/types";
+import {
+  productLabels,
+  productPriceUnits,
+  type Station,
+  type StationAgent,
+} from "@/lib/types";
 
 /** Dense rows at 44px: this fits a 1080p viewport without the inspector scrolling away. */
 const STATIONS_PER_PAGE = 20;
@@ -46,7 +52,7 @@ function ProductChips({ station }: { station: Station }) {
   }
   return (
     <span className="flex flex-wrap gap-1">
-      {(["ESSENCE", "GASOIL"] as Product[]).map((product) => {
+      {PRODUCTS.map((product) => {
         const entry = products.find((candidate) => candidate.product === product);
         if (!entry) {
           return null;
@@ -104,9 +110,52 @@ export default async function StationsPage(props: PageProps<"/stations">) {
     ? (stations.find((station) => station.id === selectedId) ?? null)
     : null;
 
-  // Which accounts speak for the selected station — inferred from the login
-  // code, since no admin route reads memberships.
-  const linkedAccounts = selected ? accountsForStation(selected, stationAccounts) : [];
+  // The selected station's accounts, from its memberships. A server without
+  // that route answers null, and the accounts are matched by login code
+  // instead — plus those the console's own record ties to this station.
+  const vaultOn = vaultEnabled();
+  const stored = await listCredentials().catch(() => []);
+  const agentsResult = selected ? await safe(() => fetchStationAgents(selected.id)) : null;
+  const fromServer: StationAgent[] | null = agentsResult?.data ?? null;
+  const inferred: StationAgent[] = selected
+    ? stationAccounts
+        .filter(
+          (account) =>
+            account.status !== "DELETED" &&
+            ((account.loginCode !== null &&
+              account.loginCode !== undefined &&
+              codeMatches(account.loginCode, selected.slug)) ||
+              stored.some((entry) => entry.accountId === account.id && entry.stationId === selected.id)),
+        )
+        .map((account) => ({
+          id: account.id,
+          fullName: account.fullName,
+          phoneNumber: account.phoneNumber,
+          loginCode: account.loginCode ?? null,
+          status: account.status,
+          membershipRole: null,
+          lastSeenAt: account.lastSeenAt ?? null,
+          createdAt: account.createdAt,
+        }))
+    : [];
+  const agents = (fromServer ?? inferred).filter((agent) => agent.status !== "DELETED");
+
+  // Decrypted here, for the selected station's agents only, so the sheet shows
+  // each password as soon as it opens.
+  const teamMembers: TeamMember[] = await Promise.all(
+    agents.map(async (agent) => {
+      const record = stored.find((entry) => entry.accountId === agent.id);
+      return {
+        id: agent.id,
+        name: agent.fullName ?? record?.fullName ?? null,
+        phoneNumber: agent.phoneNumber ?? record?.phoneNumber ?? null,
+        loginCode: agent.loginCode ?? record?.loginCode ?? null,
+        status: agent.status,
+        membershipRole: agent.membershipRole,
+        password: await revealCredential(agent.id).catch(() => null),
+      };
+    }),
+  );
 
   // The filters as they stand, for links that must not lose them.
   const currentQuery: Record<string, string | undefined> = {
@@ -447,7 +496,7 @@ export default async function StationsPage(props: PageProps<"/stations">) {
                             <span className="text-right">
                               <span className="block text-data tnum text-on-surface">
                                 {entry.priceGnf
-                                  ? `${grouped(entry.priceGnf)} GNF/L`
+                                  ? `${grouped(entry.priceGnf)} ${productPriceUnits[entry.product]}`
                                   : "Prix non publié"}
                               </span>
                               <span className="block text-body-sm text-outline">
@@ -471,62 +520,12 @@ export default async function StationsPage(props: PageProps<"/stations">) {
                       Accès gestionnaire
                     </p>
 
-                    {linkedAccounts.length === 0 ? (
-                      <p className="text-body-sm text-outline">
-                        Aucun compte ne correspond au code{" "}
-                        <code className="font-mono">{selected.slug}</code>. Ce rapprochement reste
-                        une déduction : le rattachement d’une équipe à sa station n’est pas
-                        enregistré.
-                      </p>
-                    ) : (
-                      <ul className="flex flex-col gap-1.5">
-                        {linkedAccounts.map((account) => (
-                          <li
-                            key={account.id}
-                            className="flex items-center justify-between gap-2 rounded bg-surface-container-low px-3 py-2"
-                          >
-                            <span className="min-w-0">
-                              <span className="block truncate text-body-md text-on-surface">
-                                {account.fullName ?? "Sans nom"}
-                              </span>
-                              <span className="block text-body-sm tnum text-outline">
-                                {phoneLabel(account.phoneNumber)}
-                              </span>
-                            </span>
-                            <span className="flex shrink-0 items-center gap-2">
-                              <code className="font-mono text-label-md text-on-surface-variant">
-                                {account.loginCode}
-                              </code>
-                              <Chip
-                                tone={
-                                  account.status === "ACTIVE"
-                                    ? "good"
-                                    : account.status === "PENDING"
-                                      ? "warn"
-                                      : "bad"
-                                }
-                              >
-                                {accountStatusLabels[account.status]}
-                              </Chip>
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-
-                    {/*
-                      Always mounted, never swapped: the creation revalidates
-                      this page and the new account links to the station, and
-                      the component holding the one-time password has to survive
-                      that re-render. It shows the button or the note itself.
-                    */}
-                    <div className="pt-1">
-                      <IssueAccess
-                        stationId={selected.id}
-                        stationName={selected.name}
-                        alreadyIssued={linkedAccounts.length > 0}
-                      />
-                    </div>
+                    <StationTeam
+                      key={selected.id}
+                      stationId={selected.id}
+                      members={teamMembers}
+                      vaultEnabled={vaultOn}
+                    />
                   </div>
 
                   {/* Identité & position */}

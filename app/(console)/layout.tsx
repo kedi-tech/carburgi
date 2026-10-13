@@ -86,6 +86,7 @@ export default async function ConsoleLayout({ children }: LayoutProps<"/">) {
           meta: stationCount > 0 ? String(stationCount) : undefined,
         },
         { href: "/accounts", label: "Comptes", icon: "manage_accounts" },
+        { href: "/subscriptions", label: "Abonnements", icon: "payments" },
         { href: "/catalogue", label: "Catalogue", icon: "layers" },
       ],
     },

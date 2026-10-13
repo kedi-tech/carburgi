@@ -229,7 +229,7 @@ export default async function OverviewPage() {
             icon="water_drop"
             subtitle="Ce que les stations déclarent aujourd’hui, produit par produit."
           />
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {view.products.map((tally) => {
               const declaring = tally.available + tally.empty;
               const rate = declaring > 0 ? tally.available / declaring : null;

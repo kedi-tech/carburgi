@@ -1,11 +1,11 @@
 /**
- * The wire vocabulary of the Carbugui API, mirroring `expo/assets/openapi.json`
+ * The wire vocabulary of the Carbugui API, mirroring `backend-docs/openapi.json`
  * (Admin · *). The server shouts its enums; nothing above this file has to.
  */
 
 export type AccountRole = "DRIVER" | "STATION" | "ADMIN";
 export type AccountStatus = "PENDING" | "ACTIVE" | "SUSPENDED" | "DELETED";
-export type Product = "ESSENCE" | "GASOIL";
+export type Product = "ESSENCE" | "GASOIL" | "GAZ" | "LUBRIFIANT";
 export type Availability = "AVAILABLE" | "EMPTY";
 export type ReportStatus = "PENDING" | "ACCEPTED" | "REJECTED";
 export type ReportKind =
@@ -17,6 +17,8 @@ export type ReportKind =
 export type ThreadStatus = "OPEN" | "ESCALATED" | "CLOSED";
 export type MessageStatus = "SCHEDULED" | "SENT" | "CANCELED";
 export type RecipientStatus = "PENDING" | "SENT" | "FAILED" | "SKIPPED";
+export type PlanCode = "DAY" | "MONTH";
+export type PaymentStatus = "PENDING" | "SUCCEEDED" | "FAILED" | "CANCELED" | "EXPIRED";
 
 export type Account = {
   id: string;
@@ -172,6 +174,22 @@ export type StationAccess = {
   accountId: string;
   loginCode: string;
   password: string;
+  fullName?: string | null;
+  phoneNumber?: string | null;
+};
+
+export type MembershipRole = "OWNER" | "STAFF";
+
+/** One account of a station, as `GET /admin/stations/{id}/accounts` lists it. */
+export type StationAgent = {
+  id: string;
+  fullName: string | null;
+  phoneNumber: string | null;
+  loginCode: string | null;
+  status: AccountStatus;
+  membershipRole: MembershipRole | null;
+  lastSeenAt: string | null;
+  createdAt: string;
 };
 
 /**
@@ -183,6 +201,69 @@ export type AdminAccess = {
   accountId: string;
   phoneNumber: string;
   password: string;
+};
+
+/**
+ * A subscription formula (`Admin · Abonnements`). The admin list carries the
+ * inactive ones too, hence `isActive`, which the public schema leaves out.
+ */
+export type Plan = {
+  code: PlanCode;
+  label: string;
+  priceGnf: number;
+  durationHours: number;
+  isActive?: boolean;
+};
+
+/** The driver a payment or a subscription period belongs to. */
+export type SubscriberRef = {
+  id: string;
+  fullName: string | null;
+  phoneNumber: string | null;
+};
+
+/**
+ * A Djomy payment as the admin route returns it: the driver-facing fields of
+ * the `Payment` schema plus what only the back-office sees — the processor's
+ * transaction id, its fees and what actually reached the account. The spec
+ * names these without typing them, so all three are optional.
+ */
+export type Payment = {
+  id: string;
+  accountId?: string;
+  status: PaymentStatus;
+  amountGnf: number;
+  merchantReference: string;
+  paymentUrl: string | null;
+  linkExpiresAt: string | null;
+  paymentMethod: string | null;
+  paidAt: string | null;
+  failureReason: string | null;
+  createdAt: string;
+  transactionId?: string | null;
+  fees?: number | null;
+  receivedAmount?: number | null;
+  plan: { code: string; label: string } | null;
+  subscription: { startsAt: string; endsAt: string } | null;
+  account?: SubscriberRef | null;
+};
+
+/** One paid period of access. Periods bought in advance start where the last ends. */
+export type Subscription = {
+  id: string;
+  accountId: string;
+  planCode?: PlanCode;
+  startsAt: string;
+  endsAt: string;
+  createdAt?: string;
+  plan?: { code: string; label: string } | null;
+  account?: SubscriberRef | null;
+};
+
+/** `POST /admin/subscriptions/payments/{id}/reconcile`: what Djomy said, and the payment after. */
+export type Reconciliation = {
+  outcome: string;
+  payment: Payment | null;
 };
 
 /** `POST /admin/stations/import-osm` reports what it did to the catalogue. */
@@ -210,6 +291,19 @@ export type AuthResult = {
 export const productLabels: Record<Product, string> = {
   ESSENCE: "Essence",
   GASOIL: "Gasoil",
+  GAZ: "Gaz",
+  LUBRIFIANT: "Lubrifiant",
+};
+
+/**
+ * What `priceGnf` measures. Fuels are priced by the litre; gas by the bottle;
+ * a lubricant's price is only indicative, as the stations sell several sizes.
+ */
+export const productPriceUnits: Record<Product, string> = {
+  ESSENCE: "GNF/L",
+  GASOIL: "GNF/L",
+  GAZ: "GNF/bouteille",
+  LUBRIFIANT: "GNF (indicatif)",
 };
 
 export const reportKindLabels: Record<ReportKind, string> = {
@@ -256,6 +350,24 @@ export const recipientStatusLabels: Record<RecipientStatus, string> = {
   SENT: "Remis",
   FAILED: "Échec",
   SKIPPED: "Ignoré",
+};
+
+export const paymentStatusLabels: Record<PaymentStatus, string> = {
+  PENDING: "En attente",
+  SUCCEEDED: "Payé",
+  FAILED: "Échec",
+  CANCELED: "Annulé",
+  EXPIRED: "Expiré",
+};
+
+/** `outcome` of a reconciliation, in words. Unknown values are shown as sent. */
+export const reconcileOutcomeLabels: Record<string, string> = {
+  granted: "Paiement confirmé : l’abonnement est activé.",
+  already_processed: "Paiement déjà traité : rien à faire.",
+  pending: "Djomy n’a pas encore reçu le paiement.",
+  expired: "Le lien de paiement a expiré sans paiement.",
+  failed: "Djomy indique un paiement échoué.",
+  canceled: "Le paiement a été annulé.",
 };
 
 /**

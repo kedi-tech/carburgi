@@ -18,11 +18,18 @@ import type {
   Envelope,
   MessageStatus,
   OsmImportResult,
+  Payment,
+  PaymentStatus,
+  Plan,
+  PlanCode,
+  Reconciliation,
   ReportStatus,
   SentMessage,
   Station,
   StationAccess,
+  StationAgent,
   StationReport,
+  Subscription,
   ThreadStatus,
 } from "./types";
 
@@ -30,7 +37,7 @@ import type {
  * The one place this console talks to Carbugui. Every call runs on the server,
  * so the admin token never leaves it.
  *
- * The whole `Admin · *` surface of `expo/assets/openapi.json` is covered here
+ * The whole `Admin · *` surface of `backend-docs/openapi.json` is covered here
  * and nothing else is: if a screen wants a figure, it comes from one of these
  * routes or it does not appear. That rule is what keeps the console from
  * showing a number the API cannot vouch for.
@@ -41,11 +48,18 @@ export const API_BASE_URL: string = (
 
 export class ApiError extends Error {
   readonly status: number;
+  /**
+   * The server has no such route at all ("Route introuvable"), as opposed to a
+   * 404 about a missing record. Lets a call fall back on an older route while
+   * a deployment catches up with the spec.
+   */
+  readonly routeMissing: boolean;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, routeMissing: boolean = false) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.routeMissing = routeMissing;
   }
 }
 
@@ -121,7 +135,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       payload && typeof payload === "object" && "message" in payload
         ? String((payload as { message: unknown }).message)
         : FALLBACK_MESSAGES[response.status] ?? `Le serveur a répondu par une erreur (${response.status}).`;
-    throw new ApiError(response.status, message);
+    const routeMissing =
+      response.status === 404 &&
+      Boolean(payload && typeof payload === "object" && "error" in payload &&
+        String((payload as { error: unknown }).error).startsWith("Route introuvable"));
+    throw new ApiError(response.status, message, routeMissing);
   }
 
   return payload as T;
@@ -263,20 +281,29 @@ export async function verifyStation(id: string): Promise<Station> {
 }
 
 /**
- * Mints the station's own credentials. The plaintext password comes back once
- * and is never retrievable again — the caller is responsible for showing it.
+ * Creates one named access for a station. Each call is a new account with its
+ * own login code (`slug`, then `slug-2`, `slug-3`…), so a station can have as
+ * many agents as it needs. The plaintext password comes back once; the caller
+ * shows it (and the console's vault keeps it).
  */
-export async function createStationAccess(id: string): Promise<StationAccess> {
+export async function createStationAccess(
+  id: string,
+  fullName: string,
+  phoneNumber: string | null,
+): Promise<StationAccess> {
   let response: Envelope<Partial<StationAccess>> & Partial<StationAccess>;
   try {
-    response = await request(`/admin/stations/${id}/accounts`, { method: "POST" });
+    response = await request(`/admin/stations/${id}/accounts`, {
+      method: "POST",
+      body: { fullName, ...(phoneNumber ? { phoneNumber } : {}) },
+    });
   } catch (caught) {
-    // Undocumented in the spec, observed on the live server: one account per
-    // station, and a second request is refused with a bodiless 409.
     if (caught instanceof ApiError && caught.status === 409) {
       throw new ApiError(
         409,
-        "Cette station possède déjà son identifiant d’équipe : le serveur n’en délivre qu’un par station. D’autres membres obtiennent leur propre accès en s’inscrivant depuis l’application ; le mot de passe se renouvelle via « mot de passe oublié ».",
+        caught.message.startsWith("Conflit")
+          ? "Ce numéro de téléphone est déjà utilisé par un autre compte."
+          : caught.message,
       );
     }
     throw caught;
@@ -288,12 +315,72 @@ export async function createStationAccess(id: string): Promise<StationAccess> {
     accountId: String(source.accountId ?? ""),
     loginCode: String(source.loginCode ?? ""),
     password: String(source.password ?? ""),
+    fullName: source.fullName ?? fullName,
+    phoneNumber: source.phoneNumber ?? phoneNumber,
   };
   if (!access.loginCode || !access.password) {
     throw new ApiError(
       502,
-      "Le serveur a créé le compte mais n’a pas renvoyé les identifiants. Réinitialisez le mot de passe depuis l’espace station.",
+      "Le serveur a créé le compte mais n’a pas renvoyé les identifiants. Réinitialisez son mot de passe depuis cette fiche.",
     );
+  }
+  return access;
+}
+
+/**
+ * A station's accounts, read from its memberships. `null` when the server
+ * predates the route — the page then falls back on matching login codes.
+ */
+export const fetchStationAgents = cache(async (stationId: string): Promise<StationAgent[] | null> => {
+  try {
+    const response = await request<Envelope<StationAgent[]>>(`/admin/stations/${stationId}/accounts`);
+    return response.data ?? [];
+  } catch (caught) {
+    if (caught instanceof ApiError && caught.routeMissing) {
+      return null;
+    }
+    throw caught;
+  }
+});
+
+/**
+ * Removes a station account for good: memberships and sessions go, and its
+ * login code and number are freed for a new access. On a server without the
+ * route, the account is set DELETED instead — it can no longer sign in, but
+ * its code stays taken. Returns which of the two happened.
+ */
+export async function deleteStationAccount(id: string): Promise<"deleted" | "disabled"> {
+  try {
+    await request<Envelope<null>>(`/admin/accounts/${id}`, { method: "DELETE" });
+    return "deleted";
+  } catch (caught) {
+    if (caught instanceof ApiError && caught.routeMissing) {
+      await setAccountStatus(id, "DELETED");
+      return "disabled";
+    }
+    throw caught;
+  }
+}
+
+/** A new server-generated password for a station account; its sessions are revoked. */
+export async function resetStationPassword(id: string): Promise<StationAccess> {
+  let response: Envelope<Partial<StationAccess>> & Partial<StationAccess>;
+  try {
+    response = await request(`/admin/accounts/${id}/password`, { method: "POST" });
+  } catch (caught) {
+    if (caught instanceof ApiError && caught.routeMissing) {
+      throw new ApiError(404, "Ce serveur ne propose pas encore la réinitialisation de mot de passe.");
+    }
+    throw caught;
+  }
+  const source = response.data ?? response;
+  const access: StationAccess = {
+    accountId: String(source.accountId ?? id),
+    loginCode: String(source.loginCode ?? ""),
+    password: String(source.password ?? ""),
+  };
+  if (!access.password) {
+    throw new ApiError(502, "Le serveur n’a pas renvoyé le nouveau mot de passe.");
   }
   return access;
 }
@@ -482,4 +569,61 @@ export async function cancelMessage(id: string): Promise<AdminMessage> {
     method: "PUT",
   });
   return response.data;
+}
+
+/* ---------------------------------------------------------- Subscriptions */
+
+/** Every formula, active or not. Prices here are the ones drivers are charged. */
+export const fetchPlans = cache(async (): Promise<Plan[]> => {
+  const response = await request<Envelope<Plan[]>>("/admin/subscriptions/plans");
+  return response.data ?? [];
+});
+
+export type PlanPatch = { label?: string; priceGnf?: number; isActive?: boolean };
+
+/** Only future payments are affected; a link already generated keeps its price. */
+export async function updatePlan(code: PlanCode, patch: PlanPatch): Promise<Plan> {
+  const response = await request<Envelope<Plan>>(`/admin/subscriptions/plans/${code}`, {
+    method: "PUT",
+    body: patch,
+  });
+  return response.data;
+}
+
+/** The 200 most recent payments — the route caps the history itself. */
+export const fetchPayments = cache(
+  async (status?: PaymentStatus, accountId?: string): Promise<Payment[]> => {
+    const response = await request<Envelope<Payment[]>>(
+      `/admin/subscriptions/payments${query({ status, accountId })}`,
+    );
+    return response.data ?? [];
+  },
+);
+
+/** The 200 most recent periods; `activeOnly` keeps those covering now. */
+export const fetchSubscriptions = cache(
+  async (accountId?: string, activeOnly?: boolean): Promise<Subscription[]> => {
+    const response = await request<Envelope<Subscription[]>>(
+      `/admin/subscriptions${query({ accountId, active: activeOnly ? "true" : undefined })}`,
+    );
+    return response.data ?? [];
+  },
+);
+
+/**
+ * Asks Djomy again about one payment — for a driver who says they paid and
+ * still has no access. Grants the subscription if Djomy confirms. The route
+ * documents `outcome` and the updated payment without fixing where they sit,
+ * so both the top level and `data` are read.
+ */
+export async function reconcilePayment(id: string): Promise<Reconciliation> {
+  type Raw = { outcome?: string; payment?: Payment; data?: (Payment & { outcome?: string; payment?: Payment }) | null };
+  const response = await request<Raw>(`/admin/subscriptions/payments/${id}/reconcile`, {
+    method: "POST",
+  });
+  const data = response.data ?? null;
+  return {
+    outcome: String(response.outcome ?? data?.outcome ?? ""),
+    payment: response.payment ?? data?.payment ?? (data && "status" in data ? data : null),
+  };
 }

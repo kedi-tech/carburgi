@@ -18,6 +18,9 @@ import {
   fetchThreadMessages,
   fetchThreads,
   importOsmStations,
+  deleteStationAccount,
+  resetStationPassword,
+  reconcilePayment,
   MESSAGE_MAX_LENGTH,
   MESSAGE_MAX_RECIPIENTS,
   replyToThread,
@@ -27,18 +30,24 @@ import {
   setStationPublished,
   updateArea,
   updateBrand,
+  updatePlan,
   updateStation,
   verifyStation,
 } from "@/lib/api";
 import { threadsDigest } from "@/lib/chat-live";
 import { dateLabel, normalizeGuineaPhone, phoneLabel } from "@/lib/format";
 import { audienceRecipients, isTarget, reachablePeople } from "@/lib/messages";
+import { resolveInput, reverseGeocode, type PlaceDetails } from "@/lib/geocode";
 import { safe } from "@/lib/safe";
+import { readIdentity } from "@/lib/session";
+import { forgetCredential, saveCredential } from "@/lib/vault";
+import { reconcileOutcomeLabels } from "@/lib/types";
 import type {
   AccountStatus,
   AdminAccess,
   ChatMessage,
   OsmImportResult,
+  PlanCode,
   ReportStatus,
   SentMessage,
   StationAccess,
@@ -52,8 +61,10 @@ import type {
 export type ActionState = {
   error?: string;
   done?: string;
-  /** Credentials minted by the API, readable once and never again. */
+  /** Credentials minted for a station agent. */
   access?: StationAccess;
+  /** Whether the console kept an encrypted copy of `access.password`. */
+  vaulted?: boolean;
   /** What an OpenStreetMap re-sync did to the catalogue. */
   imported?: OsmImportResult;
   /** The reply as the API stored it, for the transcript to confirm in place. */
@@ -273,6 +284,53 @@ export async function saveStation(
 }
 
 /**
+ * Fills a station's identity from a map: a Google Maps link (short or full),
+ * bare "lat, lng", or coordinates already typed. Called from the form, not
+ * submitted with it — the administrator sees the result before saving.
+ */
+export async function lookupPlace(
+  input: string | { latitude: number; longitude: number },
+): Promise<{ place?: PlaceDetails; error?: string }> {
+  // Nothing here reaches the API, so the session is checked by hand.
+  if (!(await readIdentity())) {
+    return { error: "Session expirée : reconnectez-vous." };
+  }
+
+  let coordinates = typeof input === "string" ? null : input;
+  let linkName: string | null = null;
+  if (typeof input === "string") {
+    try {
+      const resolved = await resolveInput(input);
+      if (resolved) {
+        coordinates = resolved.coordinates;
+        linkName = resolved.name;
+      }
+    } catch {
+      return { error: "Le lien Google Maps n’a pas pu être ouvert." };
+    }
+    if (!coordinates) {
+      return {
+        error: "Lien ou coordonnées non reconnus. Collez un lien Google Maps (« Partager ») ou « 9.5092, -13.7122 ».",
+      };
+    }
+  }
+  if (!coordinates) {
+    return { error: "Coordonnées manquantes." };
+  }
+
+  try {
+    const place = await reverseGeocode(coordinates);
+    return { place: { ...place, name: linkName ?? place.name } };
+  } catch {
+    // The position alone is still worth filling in.
+    return {
+      place: { ...coordinates, name: linkName, neighborhood: null, city: null, address: null, localities: [] },
+      error: "Position trouvée, mais l’adresse n’a pas pu être lue (OpenStreetMap indisponible).",
+    };
+  }
+}
+
+/**
  * Deletion cascades to products, activities, memberships and reports. The UI
  * asks for the station's name to be typed before calling this; unpublishing is
  * the reversible alternative and is offered first.
@@ -302,10 +360,6 @@ export async function removeStation(
   return { done: "Station supprimée." };
 }
 
-/**
- * Mints the station's credentials. The password comes back once — the caller
- * puts it on screen and the API can never show it again.
- */
 /** The spec's `minLength` on `fullName`; checked here so the refusal is instant. */
 const ADMIN_NAME_MIN_LENGTH = 3;
 
@@ -334,17 +388,120 @@ export async function issueStationAccess(
   formData: FormData,
 ): Promise<ActionState> {
   const id = required(formData, "id");
+  const fullName = required(formData, "fullName");
+  const rawPhone = required(formData, "phoneNumber");
+  const phoneNumber = rawPhone ? normalizeGuineaPhone(rawPhone) : null;
+
   if (!id) {
     return { error: "Station manquante." };
   }
-
-  try {
-    const access = await createStationAccess(id);
-    revalidateConsole("/stations", "/accounts");
-    return { access, done: "Identifiants créés." };
-  } catch (caught) {
-    return failure(caught, "Les identifiants n’ont pas pu être créés.");
+  if (fullName.length < 3) {
+    return { error: "Indiquez le nom de la personne (3 caractères minimum)." };
   }
+  if (rawPhone && !phoneNumber) {
+    return { error: "Numéro invalide : neuf chiffres, avec ou sans +224." };
+  }
+
+  let access: StationAccess;
+  try {
+    access = await createStationAccess(id, fullName, phoneNumber);
+  } catch (caught) {
+    return failure(caught, "L’accès n’a pas pu être créé.");
+  }
+
+  const vaulted = await keep(id, access, access.fullName ?? fullName, access.phoneNumber ?? phoneNumber);
+  revalidateConsole("/stations", "/accounts");
+  return { access, vaulted, done: `Accès créé pour ${fullName}.` };
+}
+
+/**
+ * Stores an issued password in the console's vault. A vault failure must not
+ * hide credentials the API has already created — the panel still shows them,
+ * and says they were not kept.
+ */
+async function keep(
+  stationId: string,
+  access: StationAccess,
+  fullName: string | null,
+  phoneNumber: string | null,
+): Promise<boolean> {
+  try {
+    const identity = await readIdentity();
+    return await saveCredential(
+      {
+        accountId: access.accountId,
+        stationId,
+        loginCode: access.loginCode,
+        fullName,
+        phoneNumber,
+        createdAt: new Date().toISOString(),
+        createdBy: identity?.fullName ?? identity?.id ?? null,
+      },
+      access.password,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** A forgotten password: the server issues a new one, the vault replaces the old. */
+export async function resetAgentPassword(
+  _state: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const id = required(formData, "id");
+  const stationId = required(formData, "stationId");
+  if (!id || !stationId) {
+    return { error: "Agent manquant." };
+  }
+
+  let access: StationAccess;
+  try {
+    access = await resetStationPassword(id);
+  } catch (caught) {
+    return failure(caught, "Le mot de passe n’a pas pu être réinitialisé.");
+  }
+
+  const vaulted = await keep(
+    stationId,
+    access,
+    optional(formData, "fullName"),
+    optional(formData, "phoneNumber"),
+  );
+  revalidateConsole("/stations");
+  // Without the vault the new password exists nowhere else: say it here.
+  return {
+    done: vaulted
+      ? "Nouveau mot de passe enregistré."
+      : `Nouveau mot de passe : ${access.password} — notez-le, il ne sera plus affiché.`,
+  };
+}
+
+/**
+ * Removes an agent. The account is deleted, which frees its login code and
+ * number for a new access; its stored password is erased.
+ */
+export async function removeStationAgent(
+  _state: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const id = required(formData, "id");
+  if (!id) {
+    return { error: "Agent manquant." };
+  }
+
+  let outcome: "deleted" | "disabled";
+  try {
+    outcome = await deleteStationAccount(id);
+  } catch (caught) {
+    return failure(caught, "L’agent n’a pas pu être retiré.");
+  }
+
+  await forgetCredential(id).catch(() => undefined);
+  revalidateConsole("/stations", "/accounts");
+  return {
+    done: outcome === "deleted" ? "Agent supprimé." : "Agent désactivé (suppression non disponible sur ce serveur).",
+  };
 }
 
 export async function syncOpenStreetMap(
@@ -715,4 +872,75 @@ export async function cancelNotification(
 
   revalidateConsole("/messages");
   return { done: "Envoi annulé." };
+}
+
+/* --------------------------------------------------------- Subscriptions */
+
+function isPlanCode(value: string): value is PlanCode {
+  return value === "DAY" || value === "MONTH";
+}
+
+/** Label and price of a formula. Drivers see the new figures on their next checkout. */
+export async function savePlan(_state: ActionState, formData: FormData): Promise<ActionState> {
+  const code = required(formData, "code");
+  const label = required(formData, "label");
+  const price = Number(required(formData, "priceGnf").replace(/\s/g, ""));
+
+  if (!isPlanCode(code)) {
+    return { error: "Formule inconnue." };
+  }
+  if (label.length < 2) {
+    return { error: "Le libellé est obligatoire." };
+  }
+  if (!Number.isInteger(price) || price <= 0) {
+    return { error: "Le prix doit être un nombre entier de GNF, supérieur à zéro." };
+  }
+
+  try {
+    await updatePlan(code, { label, priceGnf: price });
+  } catch (caught) {
+    return failure(caught, "La formule n’a pas pu être enregistrée.");
+  }
+
+  revalidatePath("/subscriptions");
+  return { done: "Formule enregistrée." };
+}
+
+/** A deactivated formula disappears from the app's plan list; paid periods are untouched. */
+export async function setPlanActive(_state: ActionState, formData: FormData): Promise<ActionState> {
+  const code = required(formData, "code");
+  const isActive = required(formData, "isActive") === "true";
+  if (!isPlanCode(code)) {
+    return { error: "Formule inconnue." };
+  }
+
+  try {
+    await updatePlan(code, { isActive });
+  } catch (caught) {
+    return failure(caught, "La formule n’a pas pu être modifiée.");
+  }
+
+  revalidatePath("/subscriptions");
+  return { done: isActive ? "Formule proposée." : "Formule retirée de l’application." };
+}
+
+/** For a driver who says they paid: Djomy is asked again, and access granted if it confirms. */
+export async function reconcileSubscriptionPayment(
+  _state: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const id = required(formData, "id");
+  if (!id) {
+    return { error: "Paiement manquant." };
+  }
+
+  let outcome: string;
+  try {
+    ({ outcome } = await reconcilePayment(id));
+  } catch (caught) {
+    return failure(caught, "Djomy n’a pas pu être interrogé.");
+  }
+
+  revalidatePath("/subscriptions");
+  return { done: reconcileOutcomeLabels[outcome] ?? (outcome ? `Résultat : ${outcome}.` : "Paiement revérifié.") };
 }

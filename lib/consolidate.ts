@@ -10,7 +10,7 @@ import type { Product, Station } from "./types";
  * picture of a shortage.
  */
 
-export const PRODUCTS: Product[] = ["ESSENCE", "GASOIL"];
+export const PRODUCTS: Product[] = ["ESSENCE", "GASOIL", "GAZ", "LUBRIFIANT"];
 
 /** Beyond this, a declaration is old enough that the SONAP should not lean on it. */
 export const STALE_AFTER_HOURS = 24;

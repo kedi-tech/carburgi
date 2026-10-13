@@ -21,7 +21,7 @@ const initialState: ActionState = {};
  * click-outside; the only way past is the button saying they were handed
  * over. Before that point, the form closes like any other.
  *
- * A portal for the same reason as `IssueAccess`: the header this button sits
+ * Rendered in a portal: the header this button sits
  * in is a stacking context of its own, and an overlay drawn inside it would
  * sit under the chrome.
  */
