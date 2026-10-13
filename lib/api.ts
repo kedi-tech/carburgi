@@ -1,5 +1,6 @@
 import "server-only";
 
+import { headers as requestHeaders } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 
@@ -116,10 +117,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   if (response.status === 401 && auth) {
-    // There is no admin refresh route: a rejected token ends the session. The
-    // cookie cannot be dropped from here — writing one during render throws —
-    // so the clearing happens in the route handler this redirects to.
-    redirect("/auth/expired");
+    // A rejected token: the route handler this redirects to tries one renewal
+    // and returns to this page, or clears the session — cookies cannot be
+    // written from here, during render.
+    const path = (await requestHeaders()).get("x-sonap-path");
+    redirect(path ? `/auth/expired?next=${encodeURIComponent(path)}` : "/auth/expired");
   }
 
   const payload: unknown = await response.json().catch(() => null);

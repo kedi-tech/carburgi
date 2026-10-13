@@ -1,21 +1,24 @@
 import "server-only";
 
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
+
+import {
+  ACCESS_COOKIE,
+  IDENTITY_COOKIE,
+  REFRESH_COOKIE,
+  cookieOptions,
+  isSecure,
+  type TokenPair,
+} from "./auth-tokens";
 
 import type { Account } from "./types";
 
 /**
  * The admin session lives in httpOnly cookies, so a token never reaches the
- * browser's JavaScript. There is no `/admin/auth/refresh` in the API — the
- * access token is all there is — so an expired one simply ends the session and
- * sends the user back to the login screen.
+ * browser's JavaScript. The access token is short-lived; `proxy.ts` renews it
+ * with the refresh token before it lapses (see `lib/auth-tokens.ts`), and only
+ * a refused renewal ends the session.
  */
-
-const ACCESS_COOKIE = "sonap.access";
-const IDENTITY_COOKIE = "sonap.identity";
-
-/** Matches the API's own token lifetime closely enough to avoid dead sessions. */
-const MAX_AGE_SECONDS = 60 * 60 * 12;
 
 export type Identity = {
   id: string;
@@ -23,17 +26,23 @@ export type Identity = {
   phoneNumber: string | null;
 };
 
-export async function createSession(accessToken: string, account: Account): Promise<void> {
-  const store = await cookies();
-  const options = {
-    httpOnly: true,
-    sameSite: "lax" as const,
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: MAX_AGE_SECONDS,
-  };
+async function options() {
+  const incoming = await headers();
+  return cookieOptions(isSecure(null, incoming.get("x-forwarded-proto")));
+}
 
-  store.set(ACCESS_COOKIE, accessToken, options);
+export async function createSession(
+  accessToken: string,
+  refreshToken: string | null,
+  account: Account,
+): Promise<void> {
+  const store = await cookies();
+  const settings = await options();
+
+  store.set(ACCESS_COOKIE, accessToken, settings);
+  if (refreshToken) {
+    store.set(REFRESH_COOKIE, refreshToken, settings);
+  }
   store.set(
     IDENTITY_COOKIE,
     JSON.stringify({
@@ -41,8 +50,20 @@ export async function createSession(accessToken: string, account: Account): Prom
       fullName: account.fullName,
       phoneNumber: account.phoneNumber,
     } satisfies Identity),
-    options,
+    settings,
   );
+}
+
+/** Stores a renewed pair; only callable where cookies can be written. */
+export async function storeTokens(pair: TokenPair): Promise<void> {
+  const store = await cookies();
+  const settings = await options();
+  store.set(ACCESS_COOKIE, pair.accessToken, settings);
+  store.set(REFRESH_COOKIE, pair.refreshToken, settings);
+}
+
+export async function readRefreshToken(): Promise<string | null> {
+  return (await cookies()).get(REFRESH_COOKIE)?.value ?? null;
 }
 
 export async function readAccessToken(): Promise<string | null> {
@@ -64,5 +85,6 @@ export async function readIdentity(): Promise<Identity | null> {
 export async function clearSession(): Promise<void> {
   const store = await cookies();
   store.delete(ACCESS_COOKIE);
+  store.delete(REFRESH_COOKIE);
   store.delete(IDENTITY_COOKIE);
 }

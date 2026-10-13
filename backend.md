@@ -124,6 +124,20 @@ POST /admin/accounts/{id}/password
 
 `POST /station/auth/register` répond `409 « Une demande existe déjà pour cette station »`. Merci de préciser la règle (une demande `PENDING` par station ? un compte par station ?) et, si possible, de la limiter à « une demande `PENDING` par **numéro** » : plusieurs agents d'une même station doivent pouvoir s'inscrire depuis l'application.
 
+## Demande 6 — SMS vers des numéros sans compte
+
+Le back-office importe désormais un fichier de contacts (CSV, vCard) pour les envois groupés. `POST /admin/messages` n'accepte que des `accountIds` : les numéros du fichier qui ne correspondent à aucun compte CARBUGUI ne peuvent pas être joints (prospects, gérants pas encore inscrits).
+
+Demande : accepter en plus un tableau `phoneNumbers` dans le même corps.
+
+```json
+{ "accountIds": ["cm…"], "phoneNumbers": ["+224622334455", "655001122"], "body": "…", "scheduledAt": "…" }
+```
+
+- Au moins un des deux tableaux non vide ; plafond de 1000 destinataires **au total** par appel.
+- Même normalisation que partout (`+224` + 9 chiffres) ; un numéro invalide est remonté dans `invalidPhoneNumbers` au lieu de faire échouer l'appel.
+- Un numéro qui appartient déjà à un compte est rattaché à ce compte (pas de doublon) ; les autres créent un `AdminMessageRecipient` avec `accountId: null` et le numéro en copie, comme aujourd'hui.
+
 ---
 
 ## Corrections de la documentation (sans changement de code)
@@ -137,6 +151,6 @@ POST /admin/accounts/{id}/password
 1. Demandes 1 et 3 : ensemble, elles débloquent « plusieurs accès nommés, supprimables et recréables ».
 2. Demande 4.
 3. Demande 2 et les corrections de la documentation.
-4. Demande 5.
+4. Demandes 5 et 6.
 
 Dès que les Demandes 1 et 3 sont en ligne, le back-office enverra le nom directement à l'API et réaffichera le bouton de création après une suppression. Merci de mettre à jour `openapi.json` en même temps.

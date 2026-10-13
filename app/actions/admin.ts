@@ -746,6 +746,10 @@ export async function sendNotification(
   if (target === "ONE" && !accountId) {
     return { error: "Choisissez le compte destinataire." };
   }
+  const fileIds = target === "FILE" ? required(formData, "accountIds").split(",").filter(Boolean) : [];
+  if (target === "FILE" && fileIds.length === 0) {
+    return { error: "Importez un fichier de contacts contenant au moins un numéro inscrit." };
+  }
   if (body.length === 0) {
     return { error: "Écrivez le message avant d’envoyer." };
   }
@@ -776,6 +780,10 @@ export async function sendNotification(
       }
       recipients = [person.id];
       recipientName = person.fullName ?? phoneLabel(person.phoneNumber);
+    } else if (target === "FILE") {
+      // The ids come from the browser: keep only accounts an SMS can still reach.
+      const reachable = new Set(reachablePeople(accounts).map((person) => person.id));
+      recipients = [...new Set(fileIds)].filter((id) => reachable.has(id));
     } else {
       recipients = audienceRecipients(accounts, target).map((account) => account.id);
     }

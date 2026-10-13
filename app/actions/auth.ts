@@ -22,7 +22,7 @@ export async function signIn(_state: LoginState, formData: FormData): Promise<Lo
 
   try {
     const result = await adminLogin(phoneNumber, password);
-    await createSession(result.accessToken, result.account);
+    await createSession(result.accessToken, result.refreshToken ?? null, result.account);
   } catch (caught) {
     if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) {
       return { error: "Identifiants incorrects, ou compte sans accès administrateur." };

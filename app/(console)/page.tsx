@@ -18,8 +18,7 @@ import {
 } from "@/components/ui";
 import { fetchAccounts, fetchReports, fetchStations, fetchThreads } from "@/lib/api";
 import { STALE_AFTER_HOURS, consolidate } from "@/lib/consolidate";
-import { elapsedLabel, grouped, percent, phoneLabel } from "@/lib/format";
-import { linkStation } from "@/lib/link";
+import { grouped, percent } from "@/lib/format";
 import { safe } from "@/lib/safe";
 import { productLabels } from "@/lib/types";
 
@@ -101,13 +100,6 @@ export default async function OverviewPage() {
   const declaringRate = view.total > 0 ? view.declaring / view.total : null;
   const publishedRate = view.total > 0 ? view.published / view.total : null;
   const unverified = stations.filter((station) => station.verifiedAt === null).length;
-
-  // Which station is each pending agent asking for? The API does not say, so
-  // this is the login-code heuristic — labelled as such wherever it shows.
-  const inscriptions = [...pendingAccounts]
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .slice(0, 5)
-    .map((account) => ({ account, link: linkStation(account, stations) }));
 
   return (
     <>
@@ -261,108 +253,6 @@ export default async function OverviewPage() {
             })}
           </div>
         </section>
-
-        <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
-          <section>
-            <SectionHeader
-              title="Dernières inscriptions station"
-              icon="person_add"
-              subtitle="Équipes inscrites depuis l’application, en attente d’un arbitrage."
-              action={
-                pendingAccounts.length > 0 ? (
-                  <Link
-                    href="/validations"
-                    className="flex items-center gap-1 text-label-md font-semibold text-secondary hover:underline"
-                  >
-                    Tout voir ({pendingAccounts.length})
-                    <Icon name="chevron_right" size={16} />
-                  </Link>
-                ) : undefined
-              }
-            />
-            {pendingResult.error ? (
-              <ErrorState title="File d’approbation illisible">{pendingResult.error}</ErrorState>
-            ) : inscriptions.length === 0 ? (
-              <EmptyState icon="task_alt">
-                Aucune inscription en attente. Les nouvelles demandes apparaissent ici dès qu’une
-                équipe s’inscrit depuis l’application station.
-              </EmptyState>
-            ) : (
-              <TableShell minWidth={620}>
-                <thead>
-                  <tr>
-                    <Th>Demandeur</Th>
-                    <Th>Station présumée</Th>
-                    <Th align="right">Délai</Th>
-                    <Th align="right">Action</Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {inscriptions.map(({ account, link }) => (
-                    <Tr key={account.id}>
-                      <Td>
-                        <p className="text-title-md text-on-surface">
-                          {account.fullName ?? "Sans nom"}
-                        </p>
-                        <p className="text-body-sm tnum text-outline">
-                          {phoneLabel(account.phoneNumber)}
-                        </p>
-                      </Td>
-                      <Td>
-                        {link.kind === "matched" ? (
-                          <>
-                            <p className="text-body-md text-on-surface">{link.station.name}</p>
-                            <p className="text-body-sm text-outline">
-                              {link.station.neighborhood ?? link.station.city}
-                            </p>
-                          </>
-                        ) : (
-                          <Chip tone="warn">Non identifiable</Chip>
-                        )}
-                      </Td>
-                      <Td align="right" className="text-body-sm text-outline">
-                        {elapsedLabel(account.createdAt)}
-                      </Td>
-                      <Td align="right">
-                        <Link href="/validations" className="text-label-md font-semibold text-secondary hover:underline">
-                          Instruire
-                        </Link>
-                      </Td>
-                    </Tr>
-                  ))}
-                </tbody>
-              </TableShell>
-            )}
-          </section>
-
-          <section>
-            <SectionHeader
-              title="Zones sous tension"
-              icon="local_fire_department"
-              subtitle="Zones d’au moins trois stations déclarantes, du taux de service le plus bas au plus haut."
-            />
-            {view.tension.length === 0 ? (
-              <EmptyState icon="query_stats">
-                Pas assez de déclarations pour comparer les zones. Le signal apparaît dès que trois
-                stations d’une même zone publient un statut.
-              </EmptyState>
-            ) : (
-              <Card className="divide-y divide-surface-container-low">
-                {view.tension.map((area) => (
-                  <div key={area.key} className="flex flex-col gap-2 p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-title-md text-on-surface">{area.label}</span>
-                      <Chip tone={(area.rate ?? 1) < 0.3 ? "bad" : "warn"}>
-                        {area.dry} à sec / {area.stations - area.silent} déclarantes
-                      </Chip>
-                    </div>
-                    <RateBar rate={area.rate} width={160} />
-                  </div>
-                ))}
-              </Card>
-            )}
-          </section>
-        </div>
 
         <section>
           <SectionHeader

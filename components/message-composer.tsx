@@ -7,7 +7,14 @@ import { sendNotification, type ActionState } from "@/app/actions/admin";
 import Icon from "@/components/icon";
 import { buttonClass, Chip, inputClass } from "@/components/ui";
 import { grouped, phoneLabel } from "@/lib/format";
-import { audienceLabels, type Audience, type Person, type Target } from "@/lib/messages";
+import {
+  audienceLabels,
+  importContacts,
+  type Audience,
+  type ContactImport,
+  type Person,
+  type Target,
+} from "@/lib/messages";
 import { accountStatusLabels, roleLabels } from "@/lib/types";
 
 const initialState: ActionState = {};
@@ -25,7 +32,22 @@ const TARGETS: { key: Target; label: string; icon: string; hint: string }[] = [
   { key: "STATION", label: audienceLabels.STATION, icon: "local_gas_station", hint: "Équipes validées" },
   { key: "BOTH", label: audienceLabels.BOTH, icon: "groups", hint: "Tout le réseau" },
   { key: "ONE", label: "Un compte", icon: "person", hint: "Conducteur ou équipe, au choix" },
+  { key: "FILE", label: "Fichier de contacts", icon: "upload_file", hint: "CSV, TXT ou vCard" },
 ];
+
+/** Contact files above this are not a list of phone numbers. */
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+
+/** The unregistered numbers, one per line, for the administrator to keep. */
+function downloadUnknown(numbers: string[]) {
+  const blob = new Blob([`telephone\n${numbers.join("\n")}\n`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "numeros-non-inscrits.csv";
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 /** "2026-09-11T18:30" as typed in the browser's zone → ISO 8601 in UTC. */
 function toIso(local: string): string | null {
@@ -99,6 +121,29 @@ export default function MessageComposer({
   const [scheduled, setScheduled] = useState(false);
   const [scheduledLocal, setScheduledLocal] = useState("");
   const [armed, setArmed] = useState(false);
+  const [contacts, setContacts] = useState<(ContactImport & { fileName: string }) | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+
+  const readFile = async (file: File | undefined) => {
+    setArmed(false);
+    setFileError(null);
+    if (!file) {
+      return;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setFileError("Fichier trop lourd (5 Mo maximum).");
+      return;
+    }
+    if (/\.(xlsx?|ods)$/i.test(file.name)) {
+      setFileError("Fichier Excel : enregistrez-le d’abord en CSV (Fichier › Enregistrer sous › CSV).");
+      return;
+    }
+    const result = importContacts(await file.text(), people);
+    setContacts({ ...result, fileName: file.name });
+    if (result.matched.length + result.unknown.length + result.invalid === 0) {
+      setFileError("Aucun numéro de téléphone trouvé dans ce fichier.");
+    }
+  };
 
   /** Effacer: the text and the schedule go, the chosen recipient stays. */
   const clearDraft = () => {
@@ -113,6 +158,7 @@ export default function MessageComposer({
     clearDraft();
     setPerson(null);
     setSearch("");
+    setContacts(null);
   };
 
   // Wrapping the server action is what lets the form clear itself: the
@@ -137,7 +183,14 @@ export default function MessageComposer({
     return () => window.clearTimeout(timer);
   }, [armed]);
 
-  const recipients = target === "ONE" ? (person ? 1 : 0) : counts[target];
+  const recipients =
+    target === "ONE"
+      ? person
+        ? 1
+        : 0
+      : target === "FILE"
+        ? (contacts?.matched.length ?? 0)
+        : counts[target];
   const remaining = MAX_LENGTH - body.length;
   const scheduledIso = scheduled ? toIso(scheduledLocal) : null;
   const scheduleInvalid = scheduled && scheduledIso === null;
@@ -174,13 +227,19 @@ export default function MessageComposer({
   return (
     <form action={send} className="flex flex-col gap-4 p-4">
       <input type="hidden" name="accountId" value={target === "ONE" && person ? person.id : ""} />
+      <input
+        type="hidden"
+        name="accountIds"
+        value={target === "FILE" && contacts ? contacts.matched.map((match) => match.id).join(",") : ""}
+      />
 
       <fieldset className="flex flex-col gap-2">
         <legend className="text-label-md font-semibold text-on-surface-variant">Destinataires</legend>
         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           {TARGETS.map((option) => {
             const active = option.key === target;
-            const figure = option.key === "ONE" ? null : counts[option.key];
+            const figure =
+              option.key === "ONE" || option.key === "FILE" ? null : counts[option.key];
             return (
               <label
                 key={option.key}
@@ -344,6 +403,79 @@ export default function MessageComposer({
         </div>
       ) : null}
 
+      {target === "FILE" ? (
+        <div className="flex flex-col gap-2 rounded border border-surface-dim bg-surface-container-low/40 p-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-label-md font-semibold text-on-surface-variant">
+              Fichier de contacts
+            </span>
+            <input
+              type="file"
+              accept=".csv,.txt,.vcf,text/csv,text/plain,text/vcard"
+              onChange={(event) => {
+                void readFile(event.target.files?.[0]);
+                event.target.value = "";
+              }}
+              className="text-body-sm text-on-surface-variant file:mr-3 file:rounded file:border file:border-surface-dim file:bg-surface-container-lowest file:px-3 file:py-1.5 file:text-label-md file:font-semibold file:text-on-surface hover:file:bg-surface-container-low"
+            />
+          </label>
+          <p className="text-body-sm text-outline">
+            Les numéros sont lus où qu’ils soient dans le fichier (une colonne « téléphone », une
+            liste, un export vCard du téléphone), avec ou sans +224. Seuls les numéros inscrits sur
+            CARBUGUI peuvent recevoir le SMS.
+          </p>
+          {fileError ? <p className="text-body-sm font-semibold text-error">{fileError}</p> : null}
+          {contacts && !fileError ? (
+            <div className="flex flex-col gap-2">
+              <p className="flex flex-wrap items-center gap-1.5 text-body-sm text-on-surface">
+                <Icon name="description" size={16} className="text-outline" />
+                <span className="font-semibold">{contacts.fileName}</span>
+                <Chip tone="good" dot>
+                  {grouped(contacts.matched.length)} inscrit{contacts.matched.length > 1 ? "s" : ""}
+                </Chip>
+                {contacts.unknown.length > 0 ? (
+                  <Chip tone="warn">
+                    {grouped(contacts.unknown.length)} non inscrit{contacts.unknown.length > 1 ? "s" : ""}
+                  </Chip>
+                ) : null}
+                {contacts.invalid > 0 ? (
+                  <Chip tone="neutral">
+                    {grouped(contacts.invalid)} invalide{contacts.invalid > 1 ? "s" : ""}
+                  </Chip>
+                ) : null}
+              </p>
+              {contacts.matched.length > 0 ? (
+                <ul className="max-h-48 divide-y divide-surface-container-low overflow-y-auto rounded border border-surface-dim bg-surface-container-lowest">
+                  {contacts.matched.map((match) => (
+                    <li key={match.id} className="flex items-center justify-between gap-2 px-3 py-1.5">
+                      <span className="min-w-0 truncate text-body-sm text-on-surface">
+                        {match.fullName ?? "Sans nom"}
+                      </span>
+                      <span className="shrink-0 text-body-sm tnum text-outline">
+                        {phoneLabel(match.phoneNumber)} · {roleLabels[match.role]}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {contacts.unknown.length > 0 ? (
+                <p className="flex flex-wrap items-center gap-2 text-body-sm text-on-surface-variant">
+                  Les numéros non inscrits ne recevront rien : l’API n’envoie qu’aux comptes CARBUGUI.
+                  <button
+                    type="button"
+                    onClick={() => downloadUnknown(contacts.unknown)}
+                    className="inline-flex items-center gap-1 font-semibold text-secondary hover:underline"
+                  >
+                    <Icon name="download" size={14} />
+                    Télécharger la liste
+                  </button>
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <label className="flex flex-col gap-1">
         <span className="flex items-center justify-between">
           <span className="text-label-md font-semibold text-on-surface-variant">Message</span>
@@ -428,6 +560,8 @@ export default function MessageComposer({
             </p>
           ) : target === "ONE" && !person ? (
             <p className="text-body-sm text-outline">Choisissez le compte destinataire.</p>
+          ) : target === "FILE" && !contacts ? (
+            <p className="text-body-sm text-outline">Importez un fichier de contacts.</p>
           ) : recipients === 0 ? (
             <p className="text-body-sm text-outline">
               Aucun compte actif avec un numéro dans cette audience.
