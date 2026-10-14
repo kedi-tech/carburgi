@@ -37,6 +37,7 @@ import {
 } from "@/lib/stations";
 import {
   productLabels,
+  formatWeight,
   productPriceUnits,
   type Station,
   type StationAgent,
@@ -122,9 +123,11 @@ export default async function StationsPage(props: PageProps<"/stations">) {
         .filter(
           (account) =>
             account.status !== "DELETED" &&
-            ((account.loginCode !== null &&
-              account.loginCode !== undefined &&
-              codeMatches(account.loginCode, selected.slug)) ||
+            ((account.stations
+              ? account.stations.some((membership) => membership.id === selected.id)
+              : account.loginCode !== null &&
+                account.loginCode !== undefined &&
+                codeMatches(account.loginCode, selected.slug)) ||
               stored.some((entry) => entry.accountId === account.id && entry.stationId === selected.id)),
         )
         .map((account) => ({
@@ -495,8 +498,9 @@ export default async function StationsPage(props: PageProps<"/stations">) {
                             </span>
                             <span className="text-right">
                               <span className="block text-data tnum text-on-surface">
+                                {/* With bottle weights, the GAZ price is the cheapest available one. */}
                                 {entry.priceGnf
-                                  ? `${grouped(entry.priceGnf)} ${productPriceUnits[entry.product]}`
+                                  ? `${entry.product === "GAZ" && (selected.gasSizes ?? []).length > 0 ? "dès " : ""}${grouped(entry.priceGnf)} ${productPriceUnits[entry.product]}`
                                   : "Prix non publié"}
                               </span>
                               <span className="block text-body-sm text-outline">
@@ -507,6 +511,31 @@ export default async function StationsPage(props: PageProps<"/stations">) {
                         ))}
                       </ul>
                     )}
+                    {(selected.gasSizes ?? []).length > 0 ? (
+                      <div className="flex flex-col gap-1.5 pt-1">
+                        <p className="text-label-sm font-semibold uppercase tracking-wider text-on-surface-variant">
+                          Bouteilles de gaz
+                        </p>
+                        <ul className="flex flex-wrap gap-1.5">
+                          {(selected.gasSizes ?? []).map((size) => (
+                            <li
+                              key={size.weightKg}
+                              className="flex flex-col rounded bg-surface-container-low px-3 py-2"
+                            >
+                              <span className="flex items-center gap-2">
+                                <Chip tone={size.availability === "AVAILABLE" ? "good" : "bad"} dot>
+                                  {formatWeight(size.weightKg)}
+                                </Chip>
+                              </span>
+                              <span className="mt-1 text-body-sm tnum text-on-surface-variant">
+                                {size.availability === "AVAILABLE" ? "Disponible" : "Rupture"}
+                                {size.priceGnf !== null ? ` · ${grouped(size.priceGnf)} GNF` : ""}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
                     {isStale(selected) ? (
                       <p className="text-body-sm font-semibold text-error">
                         Déclaration périmée : plus de {STALE_AFTER_HOURS} h sans mise à jour.

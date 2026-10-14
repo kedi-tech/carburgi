@@ -3,7 +3,11 @@ import type { Account, Station } from "./types";
 /**
  * Which station does this account speak for?
  *
- * The API cannot say. `GET /admin/accounts` returns a bare `Account`; the link
+ * Since 2026-10-14 the API says so: `GET /admin/accounts` gives each STATION
+ * account its `stations`. That answer is used whenever it is present. What
+ * follows is the fallback for a server without it.
+ *
+ * Before that, the API could not say. `GET /admin/accounts` returns a bare `Account`; the link
  * to a station lives in `StationMembership`, and no admin route reads it (gap
  * A2 in `docs/admin-flow.md`). So the console infers it from the login code.
  *
@@ -33,6 +37,14 @@ export function codeMatches(loginCode: string, slug: string): boolean {
 }
 
 export function linkStation(account: Account, stations: Station[]): StationLink {
+  const declared = account.stations?.[0];
+  if (declared) {
+    const station = stations.find((candidate) => candidate.id === declared.id);
+    if (station) {
+      return { kind: "matched", station };
+    }
+  }
+
   if (!account.loginCode) {
     return { kind: "unresolved", reason: "Ce compte ne porte aucun code station." };
   }
@@ -58,14 +70,15 @@ export function linkStation(account: Account, stations: Station[]): StationLink 
   return { kind: "matched", station: longest };
 }
 
-/** Every station account whose code fits this station. */
+/** Every station account that belongs to this station — by membership, else by code. */
 export function accountsForStation(station: Station, accounts: Account[]): Account[] {
   return accounts.filter(
     (account) =>
       account.role === "STATION" &&
       account.status !== "DELETED" &&
-      typeof account.loginCode === "string" &&
-      codeMatches(account.loginCode, station.slug),
+      (account.stations
+        ? account.stations.some((membership) => membership.id === station.id)
+        : typeof account.loginCode === "string" && codeMatches(account.loginCode, station.slug)),
   );
 }
 

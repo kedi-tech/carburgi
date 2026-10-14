@@ -32,6 +32,11 @@ export type Account = {
   lastSeenAt?: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * STATION accounts only, from `GET /admin/accounts` since 2026-10-14: the
+   * stations this account is a member of. Absent on older servers.
+   */
+  stations?: { id: string; name: string; slug: string; membershipRole: "OWNER" | "STAFF" }[];
 };
 
 export type Area = {
@@ -82,7 +87,24 @@ export type Station = {
   brand: Brand | null;
   area: Area | null;
   products?: StationProduct[];
+  /**
+   * Gas bottle weights the station sells (2026-10-15), lightest first. When
+   * present, the GAZ line of `products` is computed from them: available if
+   * any weight is, priced at the cheapest available bottle.
+   */
+  gasSizes?: GasSize[];
 };
+
+export type GasSize = {
+  weightKg: number;
+  availability: "AVAILABLE" | "EMPTY";
+  priceGnf: number | null;
+};
+
+/** 12.5 → "12,5 kg". */
+export function formatWeight(weightKg: number): string {
+  return `${String(weightKg).replace(".", ",")} kg`;
+}
 
 export type StationReport = {
   id: string;
@@ -368,6 +390,10 @@ export const reconcileOutcomeLabels: Record<string, string> = {
   expired: "Le lien de paiement a expiré sans paiement.",
   failed: "Djomy indique un paiement échoué.",
   canceled: "Le paiement a été annulé.",
+  amount_mismatch: "Montant ou devise incorrects : paiement refusé, aucun accès accordé.",
+  reference_mismatch: "La transaction Djomy ne correspond pas à ce paiement.",
+  not_found: "Transaction inconnue chez Djomy.",
+  nothing_to_check: "Paiement déjà clôturé, sans transaction à revérifier.",
 };
 
 /**
